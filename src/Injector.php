@@ -6,400 +6,81 @@
  */
 namespace Ray\Di;
 
-use Aura\Di\ContainerInterface;
-use Doctrine\Common\Annotations\AnnotationRegistry;
-use Doctrine\Common\Cache\ArrayCache;
-use Doctrine\Common\Cache\Cache;
-use Ray\Aop\BindInterface;
 use Ray\Aop\Compiler;
-use Ray\Aop\CompilerInterface;
-use Ray\Aop\Matcher;
-use ReflectionClass;
-use Serializable;
-use SplObjectStorage;
+use Ray\Di\Exception\Unbound;
 
-class Injector implements InjectorInterface, \Serializable
+class Injector implements InjectorInterface
 {
     /**
-     * Container
-     *
-     * @var ContainerInterface
+     * @var string
      */
-    protected $container;
+    private $classDir;
 
     /**
-     * Binding module
-     *
-     * @var AbstractModule
+     * @var Container
      */
-    protected $module;
-
-    /**
-     * @var BindInterface
-     */
-    protected $bind;
-
-    /**
-     * Pre-destroy objects
-     *
-     * @var SplObjectStorage
-     */
-    private $preDestroyObjects;
-
-    /**
-     * Logger
-     *
-     * @var LoggerInterface
-     */
-    private $logger;
-
-    /**
-     * Compiler(Aspect Weaver)
-     *
-     * @var CompilerInterface
-     */
-    private $compiler;
-
-    /**
-     * @var BoundInstanceInterface
-     */
-    public $boundInstance;
-
-    /**
-     * @var BoundDefinition
-     */
-    private $definition;
-
-    /**
-     * @var DiCompiler
-     */
-    private $diCompiler;
-
-    /**
-     * @param ContainerInterface     $container
-     * @param AbstractModule         $module
-     * @param BindInterface          $bind
-     * @param CompilerInterface      $compiler
-     * @param LoggerInterface        $logger
-     * @param BoundInstanceInterface $boundInstance
-     *
-     * @Ray\Di\Di\Inject
-     */
-    public function __construct(
-        ContainerInterface $container,
-        AbstractModule $module,
-        BindInterface $bind,
-        CompilerInterface $compiler,
-        LoggerInterface $logger = null,
-        BoundInstanceInterface $boundInstance = null
-    ) {
-        $this->container = $container;
-        $this->module = $module;
-        $this->bind = $bind;
-        $this->compiler = $compiler;
-        $this->logger = $logger;
-        $this->preDestroyObjects = new SplObjectStorage;
-        $this->boundInstance = $boundInstance ?: new BoundInstance($this, $container, $module, $logger);
-        AnnotationRegistry::registerFile(__DIR__ . '/DiAnnotation.php');
-    }
-
-    /**
-     * Notify pre-destroy
-     */
-    public function __destruct()
-    {
-        $this->preDestroyObjects->rewind();
-        while ($this->preDestroyObjects->valid()) {
-            $object = $this->preDestroyObjects->current();
-            $method = $this->preDestroyObjects->getInfo();
-            $object->$method();
-            $this->preDestroyObjects->next();
-        }
-    }
-
-    /**
-     * Return new injector
-     *
-     * @param array $modules
-     * @param Cache $cache
-     * @param null  $tmdDir
-     *
-     * @return Injector
-     */
-    public static function create(array $modules = [], Cache $cache = null, $tmdDir = null)
-    {
-        $locator = new Locator;
-        $cache = $cache ?: new ArrayCache;
-        $locator->setCache($cache);
-        $tmdDir = $tmdDir ?: sys_get_temp_dir();
-        $annotationReader = $locator->getAnnotationReader();
-        Matcher::setAnnotationReader($annotationReader);
-        $injector = (new InjectorFactory)->newInstance($modules, $cache, $tmdDir);
-
-        return $injector;
-    }
-
-    /**
-     * {@inheritdoc}
-     */
-    public function getModule()
-    {
-        return $this->module;
-    }
-
-    /**
-     * {@inheritdoc}
-     */
-    public function setModule(AbstractModule $module)
-    {
-        $module->activate($this);
-        $this->module = $module;
-
-        return $this;
-    }
-
-    /**
-     * {@inheritdoc}
-     */
-    public function getContainer()
-    {
-        return $this->container;
-    }
-
-    /**
-     * {@inheritdoc}
-     */
-    public function getLogger()
-    {
-        return $this->logger;
-    }
-
-    /**
-     * {@inheritdoc}
-     */
-    public function setLogger(LoggerInterface $logger)
-    {
-        $this->logger = $logger;
-    }
-
-    public function setDiCompiler(DiCompiler $diCompiler)
-    {
-        $this->diCompiler = $diCompiler;
-    }
-
-    /**
-     * Return aop generated file path
-     *
-     * @return string
-     */
-    public function getAopClassDir()
-    {
-        return $this->compiler->getAopClassDir();
-    }
-
-    public function __clone()
-    {
-        $this->container = clone $this->container;
-    }
+    private $container;
 
     /**
      * @param AbstractModule $module
+     * @param string         $classDir
+     */
+    public function __construct(AbstractModule $module = null, $classDir = null)
+    {
+        $this->classDir = $classDir ?: sys_get_temp_dir();
+        $this->container =  $module ? $module->getContainer() : new Container;
+        $this->container->weaveAspects(new Compiler($this->classDir));
+
+        // builtin injection
+        (new Bind($this->container, InjectorInterface::class))->toInstance($this);
+    }
+
+    /**
+     * @param string $interface
+     * @param string $name
      *
-     * @return self
+     * @return mixed
      */
-    public function __invoke(AbstractModule $module)
+    public function getInstance($interface, $name = Name::ANY)
     {
-        $this->module = $module;
-
-        return $this;
-    }
-
-    /**
-     * {@inheritdoc}
-     */
-    public function getInstance($class)
-    {
-        return $this->getNamedInstance($class);
-    }
-
-    /**
-     * {@inheritdoc}
-     */
-    public function getNamedInstance($class, $name = AbstractModule::NAME_UNSPECIFIED)
-    {
-        // module activation
-        $this->module->activate($this);
-
-        if ($this->boundInstance->hasBound($class, $this->module, $name)) {
-            return $this->boundInstance->getBound();
+        try {
+            $instance = $this->container->getInstance($interface, $name);
+        } catch (Unbound $e) {
+            $instance = $this->getInstanceOnDemandBind($interface, $e);
         }
-
-        // get bound config
-        $this->definition = $definition = $this->boundInstance->getDefinition();
-
-        // compiled ?
-        $instance = $this->getCompiledDependency($definition);
-        if ($instance) {
-            return $instance;
-        }
-
-
-        // be all parameters ready
-        $params = $this->boundInstance->bindConstruct($class, $definition->params, $this->module);
-
-        $refClass = new \ReflectionClass($definition->class);
-
-        if ($refClass->isInterface()) {
-            return $this->getInstance($definition->class);
-        }
-
-        // weave aspect
-        $module = $this->module;
-        $bind = $module($definition->class, new $this->bind);
-        /* @var $bind \Ray\Aop\Bind */
-        $hasBinding = $bind->hasBinding();
-        $instance = $hasBinding ? $this->compiler->noBindNewInstance($definition->class, $params, $bind) : $refClass->newInstanceArgs($params);
-
-        // do not call constructor twice. ever.
-        unset($definition->setter['__construct']);
-
-        // call setter methods
-        foreach ($definition->setter as $method => $value) {
-            call_user_func_array([$instance, $method], $value);
-        }
-
-        // attach interceptors
-        if ($hasBinding) {
-            $instance->rayAopBind = $bind;
-        }
-
-        // logger inject info
-        if ($this->logger) {
-            $this->logger->log($definition, $params, $definition->setter, $instance, $bind);
-        }
-
-        // object life cycle, store singleton instance.
-        $this->postInject($instance, $definition);
 
         return $instance;
     }
 
     /**
-     * @param BoundDefinition $definition
+     * @param string  $class
+     * @param Unbound $e
      *
-     * @return mixed|null|object
+     * @return mixed
      */
-    public function getCompiledDependency(BoundDefinition $definition)
+    private function getInstanceOnDemandBind($class, Unbound $e)
     {
-        if ($this->logger instanceof CompilationLogger) {
-            $instance = $this->logger->getCompiledInstance($definition);
-
-            return $instance;
+        if (! class_exists($class)) {
+            throw $e;
         }
+        $bind = (new Bind($this->container, $class))->to($class);
+        $this->container->add($bind);
+        $instance = $this->container->weaveAspect(new Compiler($this->classDir), $bind->getBound())->getInstance($class, Name::ANY);
 
-        return null;
+        return $instance;
     }
 
-    public function getDefinition()
+    public function __wakeup()
     {
-        return $this->definition;
-    }
-
-    /**
-     * {@inheritdoc}
-     */
-    public function enableBindCache()
-    {
-        AbstractModule::enableInvokeCache();
-
-        return $this;
-    }
-
-    /**
-     * Post inject procedure
-     *
-     * @param object          $object
-     * @param BoundDefinition $definition
-     */
-    private function postInject($object, BoundDefinition $definition)
-    {
-        // set life cycle
-        if ($definition) {
-            $this->setLifeCycle($object, $definition);
-        }
-
-        // set singleton object
-        if ($definition->isSingleton) {
-            $key = $this->logger->getSingletonKey($definition);
-            $this->logger->setSingletonInstance($key, $object);
-            $singletonKey = $definition->interface . $definition->name;
-            $this->container->set($singletonKey, $object);
-        }
-    }
-
-    /**
-     * Set object life cycle
-     *
-     * @param object          $instance
-     * @param BoundDefinition $definition
-     */
-    private function setLifeCycle($instance, BoundDefinition $definition)
-    {
-        $postConstructMethod = $definition->postConstruct;
-        if ($postConstructMethod) {
-            call_user_func(array($instance, $postConstructMethod));
-        }
-        if (!is_null($definition->preDestroy)) {
-            $this->preDestroyObjects->attach($instance, $definition->preDestroy);
-        }
-
-    }
-
-    /**
-     * Return module information as string
-     *
-     * @return string
-     */
-    public function __toString()
-    {
-        return (string) ($this->module);
-    }
-
-    public function serialize()
-    {
-        $data = serialize(
-            [
-                $this->container,
-                $this->module,
-                $this->bind,
-                $this->compiler,
-                $this->logger,
-                $this->preDestroyObjects,
-                $this->boundInstance
-            ]
+        spl_autoload_register(
+            function ($class) {
+                $file = $this->classDir . DIRECTORY_SEPARATOR . $class . '.php';
+                if (file_exists($file)) {
+                    // @codeCoverageIgnoreStart
+                    include $file;
+                    // @@codeCoverageIgnoreEnd
+                }
+            }
         );
-
-        return $data;
-    }
-
-    public function unserialize($data)
-    {
-        list(
-            $this->container,
-            $this->module,
-            $this->bind,
-            $this->compiler,
-            $this->logger,
-            $this->preDestroyObjects,
-            $this->boundInstance
-        ) = unserialize($data);
-
-        AnnotationRegistry::registerFile(__DIR__ . '/DiAnnotation.php');
-        register_shutdown_function(function () {
-            // @codeCoverageIgnoreStart
-            $this->__destruct();
-            // @codeCoverageIgnoreEnd
-        });
-
     }
 }

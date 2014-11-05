@@ -12,11 +12,9 @@ namespace Ray\Di\Di;
  * @Annotation
  * @Target("METHOD")
  */
-final class Named implements Annotation
+final class Named
 {
     /**
-     * Name
-     *
      * @var string
      */
     public $value;

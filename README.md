@@ -2,22 +2,16 @@ Dependency Injection framework for PHP
 ======================================
 
 [![Latest Stable Version](https://poser.pugx.org/ray/di/v/stable.png)](https://packagist.org/packages/ray/di)
-[![Build Status](https://secure.travis-ci.org/koriym/Ray.Di.png?branch=master)](http://travis-ci.org/koriym/Ray.Di)
-[![Scrutinizer Quality Score](https://scrutinizer-ci.com/g/koriym/Ray.Di/badges/quality-score.png?s=22d242e547a0112827d92fd69778a776c9527895)](https://scrutinizer-ci.com/g/koriym/Ray.Di/)
+[![Build Status](https://secure.travis-ci.org/koriym/Ray.Di.png?branch=develop-2)](http://travis-ci.org/koriym/Ray.Di)
+[![Scrutinizer Code Quality](https://scrutinizer-ci.com/b/koriym/ray.di/badges/quality-score.png?b=develop-2&s=38a2876fe3393f2d5307f3b4c6b5fb0b23812be1)](https://scrutinizer-ci.com/b/koriym/ray.di/?branch=develop-2)
 [![Code Coverage](https://scrutinizer-ci.com/g/koriym/Ray.Di/badges/coverage.png?s=676589defaa2a762ac42ed97f2a7e64efc4617b9)](https://scrutinizer-ci.com/g/koriym/Ray.Di/)
 
 **Ray.Di** was created in order to get Guice style dependency injection in PHP projects. It tries to mirror Guice's behavior and style. [Guice](http://code.google.com/p/google-guice/wiki/Motivation?tm=6) is a Java dependency injection framework developed by Google.
 
- * Supports some of the [JSR-250](http://en.wikipedia.org/wiki/JSR_250) object lifecycle annotations (`@PostConstruct`, `@PreDestroy`)
- * Provides an [AOP Alliance](http://aopalliance.sourceforge.net/)-compliant aspect-oriented programming implementation.
- * Extends [Aura.Di](http://auraphp.github.com/Aura.Di).
- * [Doctrine.Common](http://www.doctrine-project.org/projects/common) annotations.
-
-_Not all features of Guice have been implemented._
-
-
 Getting Stated
 --------------
+
+### Linked Bindings
 
 Here is a basic example of dependency injection using Ray.Di.
 
@@ -27,8 +21,14 @@ namespace MovieApp;
 use Ray\Di\AbstractModule;
 use Ray\Di\Di\Inject;
 use Ray\Di\Injector;
+use MovieApp\FinderInterface;
+use MovieApp\Finder;
 
 interface FinderInterface
+{
+}
+
+interface ListerInterface
 {
 }
 
@@ -36,7 +36,7 @@ class Finder implements FinderInterface
 {
 }
 
-class Lister
+class Lister implements ListerInterface
 {
     public $finder;
 
@@ -49,30 +49,30 @@ class Lister
     }
 }
 
-
-class Module extends AbstractModule
+class ListerModule extends AbstractModule
 {
     public function configure()
     {
-        $this->bind('MovieApp\FinderInterface')->to('MovieApp\Finder');
+        $this->bind(FinderInterface::class)->to(Finder::class);
+        $this->bind(ListerInterface::class)->to(Lister::class);
     }
 }
-$injector = Injector::create([new Module]);
-$lister = $injector->getInstance('MovieApp\Lister');
-$works = ($lister->finder instanceof MovieApp\Finder);
+
+$injector = new Injector(new ListerModule);
+$lister = $injector->getInstance(ListerInterface::class);
+$works = ($lister->finder instanceof Finder::class);
 echo(($works) ? 'It works!' : 'It DOES NOT work!');
 
 // It works!
 ```
-This is an example of **Linked Bindings**. Linked bindings map a type to its implementation.
-
+This is an example of **Linked Bindings**. Linked bindings map a type to its implementation, it can also be chained.
 
 ### Provider Bindings
 
 [Provider bindings](http://code.google.com/p/rayphp/wiki/ProviderBindings) map a type to its provider.
 
 ```php
-$this->bind('TransactionLogInterface')->toProvider('DatabaseTransactionLogProvider');
+$this->bind(TransactionLogInterface::class)->toProvider(DatabaseTransactionLogProvider::class);
 ```
 The provider class implements Ray's Provider interface, which is a simple, general interface for supplying values:
 
@@ -164,7 +164,7 @@ public RealBillingService(CreditCardProcessorInterface $processor, CreditCardPro
 ```php
 protected function configure()
 {
-    $this->bind('UserIntetrface')->toInstance(new User);
+    $this->bind(UserInterface::class)->toInstance(new User);
 }
 ```
 You can bind a type to an instance of that type. This is usually only useful for objects that don't have dependencies of their own, such as value objects:
@@ -176,24 +176,51 @@ protected function configure()
 }
 ```
 
-### Constructor Bindings
+### Untargeted Bindings
 
-Occasionally it's necessary to bind a type to an arbitrary constructor. This arises when the `@Inject` annotation cannot be applied to the target constructor. eg. when it is a third party class.
-
-```php
-class TransactionLog
-{
-    public function __construct($db)
-    {
-     // ....
-```
+You may create bindings without specifying a target. This is most useful for concrete classes. An untargetted binding informs the injector about a type, so it may prepare dependencies eagerly. Untargetted bindings have no _to_ clause, like so:
 
 ```php
+
 protected function configure()
 {
-    $this->bind('TransactionLog')->toConstructor(['db' => new Database]);
+    $this->bind(MyConcreteClass::class);
+    $this->bind(AnotherConcreteClass::class)->in(Scope::SINGLETON);
 }
 ```
+
+note: annotations is not supported Untargeted Bindings
+
+### Constructor Bindings
+
+Occasionally it's necessary to bind a type to an arbitrary constructor. This comes up when the @Inject annotation cannot be applied to the target constructor: either because it is a third party class, or because multiple constructors that participate in dependency injection. 
+`Provider Binding` provide the solution to this problem. By calling your target constructor explicitly, you don't need reflection and its associated pitfalls. But there are limitations of that approach: manually constructed instances do not participate in AOP.
+
+To address this, Ray.Di has `toConstructor` bindings.
+
+```php
+<?php
+class Car
+{
+    public function __construct(EngineInterface $engine, $carName)
+    {
+        // ...
+```
+```php
+<?php
+protected function configure()
+{
+    $this->bind(EngineInterface::class)->annotatedWith('na')->to(NaturalAspirationEngine::class);
+    $this->bind()->annotatedWith('car_name')->toInstance('Eunos Roadster');
+    $this
+        ->bind(CarInterface::class)
+        ->toConstructor(
+            Car::class,
+            'engine=na,carName=car_name' // varName=BindName,...
+        );
+}
+```
+In this example, the `Car` have a constructor which name bound with `engine=na,carName=car_name`. That constructor does not need an @Inject annotation. Ray.Di will invoke that constructor to satisfy the binding.
 
 ## Scopes
 
@@ -201,9 +228,11 @@ By default, Ray returns a new instance each time it supplies a value. This behav
 You can also configure scopes with the `@Scope` annotation.
 
 ```php
+use Ray\Di\Scope;
+
 protected function configure()
 {
-    $this->bind('TransactionLog')->to('InMemoryTransactionLog')->in(Scope::SINGLETON);
+    $this->bind(TransactionLogInterface::class)->to(InMemoryTransactionLog::class)->in(Scope::SINGLETON);
 }
 ```
 
@@ -218,23 +247,7 @@ use Ray\Di\Di\PostConstruct;
 /**
  * @PostConstruct
  */
-public function onInit()
-{
-    //....
-}
-```
-
-`@PreDestroy` is used on methods that are called after script execution finishes or exit() is called.
-This method is registered by using **register_shutdown_function**.
-
-```php
-
-use Ray\Di\Di\PreDestroy;
-
-/**
- * @PreDestroy
- */
-public function onShutdown()
+public function init()
 {
     //....
 }
@@ -312,13 +325,13 @@ class WeekendModule extends AbstractModule
         $this->bindInterceptor(
             $this->matcher->any(),
             $this->matcher->annotatedWith('NotOnWeekends'),
-            [new WeekendBlocker]
+            [$this->requestInjection(WeekendBlocker::class)]
         );
     }
 }
 
-$injector = Injector::create([new WeekendModule]);
-$billing = $injector->getInstance('BillingService');
+$injector = new Injector(new WeekendModule);
+$billing = $injector->getInstance(BillingServiceInterface::class);
 try {
     echo $billing->chargeOrder();
 } catch (\RuntimeException $e) {
@@ -352,7 +365,7 @@ class TaxModule extends AbstractModule
         $this->bindInterceptor(
             $this->matcher->annotatedWith('Tax'),
             $this->matcher->any(),
-            [new TaxCharger]
+            [$this->requestInjection(TaxCharger::class)]
         );
     }
 }
@@ -368,8 +381,8 @@ class AopMatcherModule extends AbstractModule
     {
         $this->bindInterceptor(
             $this->matcher->any(),                 // In any class and
-            $this->matcher->startWith('delete'), // ..the method start with "delete"
-            [new Logger]
+            $this->matcher->startWith('delete'),   // ..the method start with "delete"
+            [$this->requestInjection(Logger::class)]
         );
     }
 }
@@ -380,13 +393,13 @@ class AopMatcherModule extends AbstractModule
 A module can install other modules to configure more bindings.
 
  * Earlier bindings have priority even if the same binding is made later.
- * The module can use an existing bindings by passing in `$this`. The bindings in that module have priority.
+ * `overrideInstall` bindings in that module have priority.
 
 ```php
 protected function configure()
 {
     $this->install(new OtherModule);
-    $this->install(new CustomiseModule($this);
+    $this->overrideInstall(new CustomiseModule);
 }
 ```
 
@@ -397,8 +410,8 @@ You can use a built-in injector in the module which uses existing bindings.
 ```php
 protected function configure()
 {
-    $this->bind('DbInterface')->to('Db');
-    $dbLogger = $this->requestInjection('DbLogger');
+    $this->bind(DbInterface::class)->to(Db::class);
+    $dbLogger = $this->requestInjection(DbLogger::class);
 }
 ```
 
@@ -407,122 +420,28 @@ Best practice
 Your code should deal directly with the Injector as little as possible. Instead, you want to bootstrap your application by injecting one root object.
 The class of this object should use injection to obtain references to other objects on which it depends. The classes of those objects should do the same.
 
-Performance
-===========
+Performance boost
+-------------
 
-For performance boosts you can use the **CacheInjector** which performs caching on the injected object, or in order to increase the performance of object creation the **DiCompiler**.
-
-Caching dependency-injected objects
------------------------------------
-
-Storing dependency-injected objects in a cache container has huge performance boosts.
-**CacheInjector** also handles *object life cycle* as well as auto loading of generated aspect weaved objects.
-
-```php
-$injector = function()  {
-    return Injector::create([new AppModule]);
-};
-$initialization = function() {
-    // initialize per system startup (not per each request)
-};
-$injector = new CacheInjector($injector, $initialization, 'cache-namespace', new ApcCache);
-$app = $injector->getInsntance('ApplicationInterface');
-$app->run();
-```
-
-Dependency-injection Compiler
------------------------------
-
-The **Di Compiler** speeds up object creation/compilation by taking the creation methods and dependency relationships from the injection logs. Excelling in memory usage and speed.
-
-Of cource there is no cost of reading annotations at run time. It doesn't use the injector or the injection settings (modules)
-
-**Limitations**
-* Because objects are created from the injection log, there is a need to create all objects using the injector.[^1]
-**@PreDestroy** is not supported.
-
-```php
-$cache = new ApcCache;
-$cacheKey = 'context-key';
-$tmpDir = '/tmp';
-$moduleProvider = function() {
-    return new DiaryAopModule;
-};
-$injector = DiCompiler::create($moduleProvider, $cache, $cacheKey, $tmpDir);
-$injector->getInstance('Ray\Di\DiaryInterface');
-```
-
-**Pro Tip**
-
-You can run `compile()` before deployment and the first usage of the class. Then at runtime there is no compile cost.
-
-```php
-$injector = DiCompiler::create($moduleProvider, $cache, $cacheKey, $tmpDir);
-$injector->compile('Koriym\RayApp\Model\Author');
-$injector->compile('Koriym\RayApp\Model\Diary');
-...
-```
-
-Cacheable class example
------------------------
+インジェクターオブジェクトをシリアライズすると、束縛の最適化が行われます。
+`unserialize`して利用したインジェクターではパフォーマンスが向上します。
 
 ```php
 
-use Ray\Di\Di\Inject;
-use Ray\Di\Di\PostConstruct;
+// save
+$injector = new Injector(new ListerModule);
+$cachedInjector = serialize($injector);
 
-class UserRepository
-{
-    private $dependency;
-
-    /**
-     * @Inject
-     */
-    public function __construct(DependencyInterface $dependency)
-    {
-        // per system startup
-        $this->dependency = $dependency;
-    }
-
-    /**
-     * @PostConstruct
-     */
-    public function init()
-    {
-        // per each request
-        //
-        // In this @PostConstruct method, You can expect
-        // - All injection is completed.
-        // - This function is called regardless object cache status unlike __construct or __wakeup.
-        // - You can set unserializable item to property such as closure or \PDO object.
-    }
-
-    public function getUserData($Id)
-    {
-        // The request is stateless.
-    }
-}
+// load
+$injector = unserialize($cachedInjector);
+$lister = $injector->getInstance(ListerInterface::class);
 ```
-
-Annotation Caching
-------------------
-
-If working with large legacy codebases it might not be feasible to cache entire class instances as the CacheInjector
-does. You can still achieve speed improvements by caching the annotations of each class if you pass an object
-implementing `Doctrine\Common\Cache` as the second argument to `Injector::create`
 
 Requirements
 ------------
 
-* PHP 5.4+
-
-Documentation
--------------
-
-Available at Google Code.
-
- [http://code.google.com/p/rayphp/wiki/Motivation?tm=6](http://code.google.com/p/rayphp/wiki/Motivation?tm=6)
-
+* PHP 5.5+
+* hhvm
 
 Installation
 ------------
@@ -531,18 +450,17 @@ The recommended way to install Ray.Di is through [Composer](https://github.com/c
 
 ```bash
 # Add Ray.Di as a dependency
-$ composer require ray/di 1.*
+$ composer require ray/di ~2.0@dev
 ```
 
 Testing Ray.Di
 --------------
 
-Here's how to install Ray.Di from source and run the unit tests and samples.
+Here's how to install Ray.Di from source and run the unit tests and demos.
 
 ```bash
-$ composer create-project ray/di Ray.Di 1.*
+$ composer create-project ray/di:~2.0@dev Ray.Di
 $ cd Ray.Di
 $ phpunit
-$ php docs/run_sample.php
-$ php docs/runtime/run.php
+$ php docs/demo/run.php
 ```

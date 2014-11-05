@@ -6,6 +6,8 @@
  */
 namespace Ray\Di\Exception;
 
-class InvalidProvider extends Binding implements ExceptionInterface
+use Ray\Di\Exception;
+
+class InvalidProvider extends \InvalidArgumentException implements ExceptionInterface
 {
 }
