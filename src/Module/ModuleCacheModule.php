@@ -13,11 +13,6 @@ use Ray\Di\InjectorFactory;
 class ModuleCacheModule extends AbstractModule
 {
     /**
-     * @var string
-     */
-    private $key;
-
-    /**
      * @var callable
      */
     private $moduleProvider;
@@ -51,7 +46,7 @@ class ModuleCacheModule extends AbstractModule
      */
     public function get(Cache $cache)
     {
-        $module = $cache->fetch($this->key);
+        $module = $cache->fetch($this->cacheKey);
         if ($module) {
 
             return $module;
@@ -60,7 +55,7 @@ class ModuleCacheModule extends AbstractModule
         $module = $module();
         $injector = (new InjectorFactory)->newInstance([$module], $cache, $this->tmpDir);
         $module->activate($injector);
-        $cache->save($this->key, $module);
+        $cache->save($this->cacheKey, $module);
 
         return $module;
     }
